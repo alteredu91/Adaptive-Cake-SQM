@@ -1,0 +1,15 @@
+[Unit]
+Description=QoS CAKE Web Monitor Dashboard
+After=network.target cake-adaptive.service
+
+[Service]
+Type=simple
+WorkingDirectory=/usr/local/share/qos-cake-monitor
+ExecStart=/usr/bin/python3 /usr/local/share/qos-cake-monitor/app.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

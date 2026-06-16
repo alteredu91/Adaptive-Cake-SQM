@@ -1,0 +1,983 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QoS CAKE Adaptive Dashboard</title>
+    <!-- Google Fonts: Outfit -->
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <!-- FontAwesome Icons -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <!-- Chart.js CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --bg-color: #0b0f19;
+            --card-bg: rgba(17, 24, 39, 0.7);
+            --card-border: rgba(255, 255, 255, 0.08);
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+            --accent-cyan: #06b6d4;
+            --accent-blue: #3b82f6;
+            --accent-magenta: #d946ef;
+            --accent-purple: #8b5cf6;
+            --success: #10b981;
+            --danger: #ef4444;
+            --warning: #f59e0b;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Outfit', sans-serif;
+            transition: all 0.25s ease;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-primary);
+            min-height: 100vh;
+            overflow-x: hidden;
+            background-image: 
+                radial-gradient(at 10% 20%, rgba(59, 130, 246, 0.1) 0px, transparent 50%),
+                radial-gradient(at 90% 80%, rgba(217, 70, 239, 0.08) 0px, transparent 50%);
+            background-attachment: fixed;
+            padding: 1.5rem;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 2rem;
+            padding-bottom: 1rem;
+            border-bottom: 1px solid var(--card-border);
+        }
+
+        .logo-area {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .logo-area i {
+            font-size: 2.2rem;
+            background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            animation: pulse-glow 3s infinite alternate;
+        }
+
+        .logo-area h1 {
+            font-size: 1.8rem;
+            font-weight: 700;
+            letter-spacing: -0.5px;
+        }
+
+        .logo-area span {
+            font-size: 0.85rem;
+            background: rgba(255, 255, 255, 0.1);
+            padding: 2px 8px;
+            border-radius: 9999px;
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+
+        .status-badge-area {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .status-badge {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 1rem;
+            border-radius: 9999px;
+            font-weight: 600;
+            font-size: 0.85rem;
+            border: 1px solid var(--card-border);
+        }
+
+        .status-active {
+            background: rgba(16, 185, 129, 0.15);
+            color: var(--success);
+            border-color: rgba(16, 185, 129, 0.3);
+        }
+
+        .status-stopped {
+            background: rgba(239, 68, 68, 0.15);
+            color: var(--danger);
+            border-color: rgba(239, 68, 68, 0.3);
+        }
+
+        /* Dashboard Grid Layout */
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: repeat(12, 1fr);
+            gap: 1.5rem;
+        }
+
+        .glass-card {
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 1.25rem;
+            padding: 1.5rem;
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+        }
+
+        /* Speed Cards */
+        .speed-card {
+            grid-column: span 3;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .speed-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 4px;
+        }
+
+        .download-card::before {
+            background: linear-gradient(90deg, var(--accent-cyan), var(--accent-blue));
+        }
+
+        .upload-card::before {
+            background: linear-gradient(90deg, var(--accent-magenta), var(--accent-purple));
+        }
+
+        .speed-card .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+            font-weight: 500;
+        }
+
+        .speed-card .card-header i {
+            font-size: 1.2rem;
+        }
+
+        .speed-value {
+            font-size: 3.2rem;
+            font-weight: 800;
+            line-height: 1;
+            margin: 1rem 0 0.5rem 0;
+            background: var(--text-primary);
+            -webkit-background-clip: text;
+        }
+
+        .download-card .speed-value {
+            background: linear-gradient(135deg, #fff, var(--accent-cyan));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .upload-card .speed-value {
+            background: linear-gradient(135deg, #fff, var(--accent-magenta));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .speed-unit {
+            font-size: 1.1rem;
+            font-weight: 500;
+            color: var(--text-secondary);
+        }
+
+        .speed-details {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            margin-top: 0.5rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        /* Realtime Chart */
+        .chart-card {
+            grid-column: span 6;
+            min-height: 250px;
+        }
+
+        .chart-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+
+        .chart-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        /* Limiter & Daemon Control Panel */
+        .control-card {
+            grid-column: span 4;
+            display: flex;
+            flex-direction: column;
+            gap: 1.25rem;
+        }
+
+        .control-section-title {
+            font-size: 1rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+            border-left: 3px solid var(--accent-cyan);
+            padding-left: 0.5rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .preset-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 0.5rem;
+        }
+
+        .preset-btn {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid var(--card-border);
+            border-radius: 0.5rem;
+            padding: 0.6rem;
+            color: var(--text-primary);
+            font-size: 0.85rem;
+            font-weight: 500;
+            cursor: pointer;
+            text-align: center;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 0.2rem;
+        }
+
+        .preset-btn:hover {
+            background: rgba(255, 255, 255, 0.08);
+            border-color: rgba(255, 255, 255, 0.2);
+            transform: translateY(-2px);
+        }
+
+        .preset-btn.active {
+            background: linear-gradient(135deg, rgba(6, 182, 212, 0.2), rgba(59, 130, 246, 0.2));
+            border-color: var(--accent-cyan);
+            color: var(--accent-cyan);
+        }
+
+        .preset-btn span.bw-label {
+            font-weight: 700;
+            font-size: 1rem;
+        }
+
+        .custom-limit-inputs {
+            display: flex;
+            gap: 0.5rem;
+            margin-top: 0.5rem;
+        }
+
+        .custom-limit-inputs input {
+            flex: 1;
+            background: rgba(0, 0, 0, 0.2);
+            border: 1px solid var(--card-border);
+            padding: 0.5rem;
+            border-radius: 0.5rem;
+            color: var(--text-primary);
+            font-size: 0.85rem;
+            outline: none;
+        }
+
+        .custom-limit-inputs input:focus {
+            border-color: var(--accent-cyan);
+        }
+
+        .btn-apply {
+            background: linear-gradient(90deg, var(--accent-cyan), var(--accent-blue));
+            color: white;
+            border: none;
+            border-radius: 0.5rem;
+            padding: 0.5rem 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            font-size: 0.85rem;
+        }
+
+        .btn-apply:hover {
+            opacity: 0.9;
+            box-shadow: 0 4px 12px rgba(6, 182, 212, 0.3);
+        }
+
+        /* Daemon controls */
+        .daemon-controls {
+            display: flex;
+            gap: 0.5rem;
+        }
+
+        .btn-ctrl {
+            flex: 1;
+            padding: 0.6rem;
+            border-radius: 0.5rem;
+            border: 1px solid var(--card-border);
+            background: rgba(255, 255, 255, 0.03);
+            color: var(--text-primary);
+            font-weight: 600;
+            font-size: 0.8rem;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.4rem;
+        }
+
+        .btn-ctrl:hover {
+            background: rgba(255, 255, 255, 0.08);
+        }
+
+        .btn-start:hover {
+            color: var(--success);
+            border-color: var(--success);
+        }
+
+        .btn-stop:hover {
+            color: var(--danger);
+            border-color: var(--danger);
+        }
+
+        .btn-restart:hover {
+            color: var(--warning);
+            border-color: var(--warning);
+        }
+
+        /* Connection Monitor */
+        .conn-card {
+            grid-column: span 8;
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+            height: 480px;
+        }
+
+        .conn-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .conn-filters {
+            display: flex;
+            gap: 0.5rem;
+            align-items: center;
+        }
+
+        .search-box {
+            background: rgba(0, 0, 0, 0.2);
+            border: 1px solid var(--card-border);
+            border-radius: 0.5rem;
+            padding: 0.4rem 0.8rem;
+            color: var(--text-primary);
+            font-size: 0.85rem;
+            outline: none;
+            width: 200px;
+        }
+
+        .search-box:focus {
+            border-color: var(--accent-cyan);
+        }
+
+        .filter-btn {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid var(--card-border);
+            padding: 0.4rem 0.8rem;
+            border-radius: 0.5rem;
+            color: var(--text-secondary);
+            font-size: 0.8rem;
+            cursor: pointer;
+            font-weight: 500;
+        }
+
+        .filter-btn:hover, .filter-btn.active {
+            background: rgba(255, 255, 255, 0.1);
+            color: var(--text-primary);
+        }
+
+        .filter-btn.active {
+            border-color: var(--accent-cyan);
+            color: var(--accent-cyan);
+        }
+
+        .table-container {
+            overflow-y: auto;
+            flex: 1;
+            border: 1px solid var(--card-border);
+            border-radius: 0.75rem;
+            background: rgba(0, 0, 0, 0.15);
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            text-align: left;
+            font-size: 0.85rem;
+        }
+
+        th {
+            background: rgba(255, 255, 255, 0.02);
+            padding: 0.75rem 1rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+            border-bottom: 1px solid var(--card-border);
+            position: sticky;
+            top: 0;
+            backdrop-filter: blur(10px);
+        }
+
+        td {
+            padding: 0.75rem 1rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+            color: var(--text-primary);
+        }
+
+        tr:hover td {
+            background: rgba(255, 255, 255, 0.02);
+        }
+
+        .badge-proto {
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-weight: 700;
+            font-size: 0.75rem;
+        }
+
+        .badge-tcp {
+            background: rgba(59, 130, 246, 0.15);
+            color: var(--accent-blue);
+        }
+
+        .badge-udp {
+            background: rgba(217, 70, 239, 0.15);
+            color: var(--accent-magenta);
+        }
+
+        .badge-state {
+            font-weight: 500;
+            font-size: 0.75rem;
+            padding: 2px 6px;
+            border-radius: 4px;
+            background: rgba(255, 255, 255, 0.05);
+            color: var(--text-secondary);
+        }
+
+        .badge-estab {
+            background: rgba(16, 185, 129, 0.15);
+            color: var(--success);
+        }
+
+        .badge-process {
+            background: rgba(6, 182, 212, 0.1);
+            color: var(--accent-cyan);
+            border: 1px solid rgba(6, 182, 212, 0.2);
+            padding: 1px 5px;
+            border-radius: 4px;
+        }
+
+        /* Logs Console */
+        .logs-card {
+            grid-column: span 12;
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+
+        .logs-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .logs-console {
+            background: #05070c;
+            border: 1px solid var(--card-border);
+            border-radius: 0.75rem;
+            padding: 1rem;
+            height: 180px;
+            overflow-y: auto;
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 0.8rem;
+            color: #38bdf8;
+            line-height: 1.4;
+            white-space: pre-wrap;
+        }
+
+        /* Utility classes */
+        @keyframes pulse-glow {
+            0% { filter: drop-shadow(0 0 2px rgba(6, 182, 212, 0.4)); }
+            100% { filter: drop-shadow(0 0 10px rgba(139, 92, 246, 0.6)); }
+        }
+
+        /* Responsive */
+        @media (max-width: 1024px) {
+            .speed-card {
+                grid-column: span 6;
+            }
+            .chart-card {
+                grid-column: span 12;
+            }
+            .control-card {
+                grid-column: span 12;
+            }
+            .conn-card {
+                grid-column: span 12;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div class="logo-area">
+            <i class="fa-solid fa-gauge-high"></i>
+            <div>
+                <h1>QoS CAKE Adaptive</h1>
+                <p style="font-size: 0.8rem; color: var(--text-secondary);">Sistem Pengontrol Latensi & Simulasi Jaringan Skripsi</p>
+            </div>
+            <span>STB 192.168.1.19</span>
+        </div>
+        
+        <div class="status-badge-area">
+            <div id="daemon-status-badge" class="status-badge status-stopped">
+                <i class="fa-solid fa-circle"></i>
+                <span id="daemon-status-text">Daemon: Offline</span>
+            </div>
+        </div>
+    </header>
+
+    <div class="dashboard-grid">
+        
+        <!-- Speed Card 1: Download -->
+        <div class="glass-card speed-card download-card">
+            <div class="card-header">
+                <span>DOWNLOAD (CLIENTS)</span>
+                <i class="fa-solid fa-arrow-down" style="color: var(--accent-cyan);"></i>
+            </div>
+            <div>
+                <div class="speed-value" id="speed-dl">0.00 <span class="speed-unit">Mbps</span></div>
+                <div class="speed-details" id="lan-details">
+                    <i class="fa-solid fa-network-wired"></i> Interface: veth_rtr_lan
+                </div>
+            </div>
+        </div>
+
+        <!-- Speed Card 2: Upload -->
+        <div class="glass-card speed-card upload-card">
+            <div class="card-header">
+                <span>UPLOAD (CLIENTS)</span>
+                <i class="fa-solid fa-arrow-up" style="color: var(--accent-magenta);"></i>
+            </div>
+            <div>
+                <div class="speed-value" id="speed-ul">0.00 <span class="speed-unit">Mbps</span></div>
+                <div class="speed-details" id="wan-details">
+                    <i class="fa-solid fa-globe"></i> Interface: eth0
+                </div>
+            </div>
+        </div>
+
+        <!-- Speed Card 3: CAKE Active RTT -->
+        <div class="glass-card speed-card">
+            <div class="card-header">
+                <span>CAKE ADAPTIVE RTT</span>
+                <i class="fa-solid fa-clock-rotate-left" style="color: var(--accent-blue);"></i>
+            </div>
+            <div>
+                <div class="speed-value" id="cake-rtt" style="color: var(--accent-blue);">100ms</div>
+                <div class="speed-details">
+                    <i class="fa-solid fa-sliders"></i> Nilai Parameter RTT Saat Ini
+                </div>
+            </div>
+        </div>
+
+        <!-- Speed Card 4: WAN Limiter Limit -->
+        <div class="glass-card speed-card">
+            <div class="card-header">
+                <span>ISP SIMULATOR LIMIT</span>
+                <i class="fa-solid fa-filter" style="color: var(--accent-purple);"></i>
+            </div>
+            <div>
+                <div class="speed-value" id="wan-limit" style="color: var(--accent-purple);">Uncapped</div>
+                <div class="speed-details">
+                    <i class="fa-solid fa-server"></i> Batas Kecepatan WAN/ISP
+                </div>
+            </div>
+        </div>
+
+        <!-- Realtime Speed Chart -->
+        <div class="glass-card chart-card">
+            <div class="chart-header">
+                <div class="chart-title">
+                    <i class="fa-solid fa-chart-line" style="color: var(--accent-cyan);"></i>
+                    Grafik Kecepatan Real-time
+                </div>
+            </div>
+            <div style="position: relative; width: 100%; height: 180px;">
+                <canvas id="speedChart"></canvas>
+            </div>
+        </div>
+
+        <!-- Limiter and Control Panel -->
+        <div class="glass-card control-card">
+            <div>
+                <div class="control-section-title">ISP Simulator Limiter (Simulasi)</div>
+                <div class="preset-grid">
+                    <button class="preset-btn" onclick="applyPreset('disable', 'disable', this)" id="preset-disable">
+                        <span class="bw-label">Uncapped</span>
+                        <span>Full 150 Mbps</span>
+                    </button>
+                    <button class="preset-btn" onclick="applyPreset('100mbit', '20mbit', this)">
+                        <span class="bw-label">100 Mbps</span>
+                        <span>Simulasi 100M/20M</span>
+                    </button>
+                    <button class="preset-btn" onclick="applyPreset('50mbit', '10mbit', this)">
+                        <span class="bw-label">50 Mbps</span>
+                        <span>Simulasi 50M/10M</span>
+                    </button>
+                    <button class="preset-btn" onclick="applyPreset('30mbit', '10mbit', this)">
+                        <span class="bw-label">30 Mbps</span>
+                        <span>Simulasi 30M/10M</span>
+                    </button>
+                    <button class="preset-btn" onclick="applyPreset('10mbit', '2mbit', this)">
+                        <span class="bw-label">10 Mbps</span>
+                        <span>Simulasi 10M/2M</span>
+                    </button>
+                </div>
+                
+                <div class="custom-limit-inputs">
+                    <input type="text" id="custom-dl" placeholder="DL (e.g. 80mbit)">
+                    <input type="text" id="custom-ul" placeholder="UL (e.g. 15mbit)">
+                    <button class="btn-apply" onclick="applyCustom()">Terapkan</button>
+                </div>
+            </div>
+
+            <div>
+                <div class="control-section-title">Kontrol QoS Daemon</div>
+                <div class="daemon-controls">
+                    <button class="btn-ctrl btn-start" onclick="controlDaemon('start')">
+                        <i class="fa-solid fa-play"></i> Start
+                    </button>
+                    <button class="btn-ctrl btn-stop" onclick="controlDaemon('stop')">
+                        <i class="fa-solid fa-stop"></i> Stop
+                    </button>
+                    <button class="btn-ctrl btn-restart" onclick="controlDaemon('restart')">
+                        <i class="fa-solid fa-rotate-right"></i> Restart
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Connections Monitor -->
+        <div class="glass-card conn-card">
+            <div class="conn-header">
+                <div class="chart-title">
+                    <i class="fa-solid fa-network-wired" style="color: var(--accent-magenta);"></i>
+                    Daftar Koneksi Aktif (TCP/UDP)
+                </div>
+                <div class="conn-filters">
+                    <input type="text" id="conn-search" class="search-box" placeholder="Cari IP, port, proses..." onkeyup="filterConnections()">
+                    <button class="filter-btn active" onclick="setConnFilter('ALL', this)">Semua</button>
+                    <button class="filter-btn" onclick="setConnFilter('TCP', this)">TCP</button>
+                    <button class="filter-btn" onclick="setConnFilter('UDP', this)">UDP</button>
+                </div>
+            </div>
+            
+            <div class="table-container">
+                <table id="connections-table">
+                    <thead>
+                        <tr>
+                            <th>Protokol</th>
+                            <th>Status</th>
+                            <th>Alamat Lokal</th>
+                            <th>Alamat Remote</th>
+                            <th>Nama Proses</th>
+                        </tr>
+                    </thead>
+                    <tbody id="connections-list">
+                        <tr>
+                            <td colspan="5" style="text-align: center; color: var(--text-secondary);">Mengambil data koneksi...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Terminal Logs -->
+        <div class="glass-card logs-card">
+            <div class="logs-header">
+                <div class="chart-title">
+                    <i class="fa-solid fa-terminal" style="color: var(--warning);"></i>
+                    Log Sistem Daemon CAKE Adaptive
+                </div>
+                <label style="font-size: 0.8rem; color: var(--text-secondary); display: flex; align-items: center; gap: 0.3rem; cursor: pointer;">
+                    <input type="checkbox" id="autoscroll-logs" checked> Auto Scroll
+                </label>
+            </div>
+            <div class="logs-console" id="logs-console">Mengambil log...</div>
+        </div>
+
+    </div>
+
+    <script>
+        // Init Chart.js
+        const ctx = document.getElementById('speedChart').getContext('2d');
+        const maxDataPoints = 30;
+        const chartLabels = Array(maxDataPoints).fill('');
+        const dlData = Array(maxDataPoints).fill(0);
+        const ulData = Array(maxDataPoints).fill(0);
+
+        const speedChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: chartLabels,
+                datasets: [
+                    {
+                        label: 'Download (Mbps)',
+                        data: dlData,
+                        borderColor: '#06b6d4',
+                        backgroundColor: 'rgba(6, 182, 212, 0.05)',
+                        borderWidth: 2,
+                        tension: 0.4,
+                        fill: true,
+                        pointRadius: 0
+                    },
+                    {
+                        label: 'Upload (Mbps)',
+                        data: ulData,
+                        borderColor: '#d946ef',
+                        backgroundColor: 'rgba(217, 70, 239, 0.05)',
+                        borderWidth: 2,
+                        tension: 0.4,
+                        fill: true,
+                        pointRadius: 0
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        display: true,
+                        labels: {
+                            color: '#94a3b8',
+                            font: { family: 'Outfit', size: 11 }
+                        }
+                    }
+                },
+                scales: {
+                    x: {
+                        grid: { display: false }
+                    },
+                    y: {
+                        grid: { color: 'rgba(255, 255, 255, 0.05)' },
+                        ticks: {
+                            color: '#94a3b8',
+                            font: { family: 'Outfit' }
+                        },
+                        suggestedMax: 10
+                    }
+                }
+            }
+        });
+
+        // Global State
+        let currentFilter = 'ALL';
+        let connectionsData = [];
+
+        function updateChart(dl, ul) {
+            dlData.push(dl);
+            dlData.shift();
+            ulData.push(ul);
+            ulData.shift();
+            speedChart.update();
+        }
+
+        // Fetch Status & Speed
+        async function fetchStatus() {
+            try {
+                const res = await fetch('/api/status');
+                const data = await res.json();
+                
+                // Update Badge
+                const badge = document.getElementById('daemon-status-badge');
+                const badgeText = document.getElementById('daemon-status-text');
+                if (data.daemon_status === 'Running') {
+                    badge.className = 'status-badge status-active';
+                    badgeText.innerText = 'Daemon: Active';
+                } else {
+                    badge.className = 'status-badge status-stopped';
+                    badgeText.innerText = 'Daemon: Offline';
+                }
+
+                // Update Speeds (Note: we read from LAN interface rate to show what the clients see)
+                // LAN rx_mbps = clients' upload speed, LAN tx_mbps = clients' download speed
+                const dlRate = data.interfaces.lan.tx_mbps;
+                const ulRate = data.interfaces.lan.rx_mbps;
+
+                document.getElementById('speed-dl').innerHTML = `${dlRate.toFixed(2)} <span class="speed-unit">Mbps</span>`;
+                document.getElementById('speed-ul').innerHTML = `${ulRate.toFixed(2)} <span class="speed-unit">Mbps</span>`;
+                
+                // Update Details
+                document.getElementById('lan-details').innerHTML = `<i class="fa-solid fa-network-wired"></i> LAN: ${data.interfaces.lan.name}`;
+                document.getElementById('wan-details').innerHTML = `<i class="fa-solid fa-globe"></i> WAN: ${data.interfaces.wan.name}`;
+                
+                // Update Parameters
+                document.getElementById('cake-rtt').innerText = data.interfaces.lan.cake_rtt;
+                document.getElementById('wan-limit').innerText = data.interfaces.wan.limit;
+                
+                // Chart
+                updateChart(dlRate, ulRate);
+
+                // Logs
+                const logsConsole = document.getElementById('logs-console');
+                logsConsole.innerText = data.logs;
+                if (document.getElementById('autoscroll-logs').checked) {
+                    logsConsole.scrollTop = logsConsole.scrollHeight;
+                }
+
+            } catch (err) {
+                console.error("Gagal mengambil data status:", err);
+            }
+        }
+
+        // Fetch Connections
+        async function fetchConnections() {
+            try {
+                const res = await fetch('/api/connections');
+                connectionsData = await res.json();
+                renderConnectionsTable();
+            } catch (err) {
+                console.error("Gagal mengambil koneksi:", err);
+            }
+        }
+
+        function renderConnectionsTable() {
+            const list = document.getElementById('connections-list');
+            const searchVal = document.getElementById('conn-search').value.toLowerCase();
+            
+            let filtered = connectionsData;
+            
+            // Filter by protocol
+            if (currentFilter !== 'ALL') {
+                filtered = filtered.filter(c => c.proto === currentFilter);
+            }
+
+            // Filter by search
+            if (searchVal) {
+                filtered = filtered.filter(c => 
+                    c.local.toLowerCase().includes(searchVal) || 
+                    c.peer.toLowerCase().includes(searchVal) || 
+                    c.process.toLowerCase().includes(searchVal)
+                );
+            }
+
+            if (filtered.length === 0) {
+                list.innerHTML = `<tr><td colspan="5" style="text-align: center; color: var(--text-secondary);">Tidak ada koneksi aktif</td></tr>`;
+                return;
+            }
+
+            list.innerHTML = filtered.map(c => {
+                const protoClass = c.proto === 'TCP' ? 'badge-tcp' : 'badge-udp';
+                const stateClass = c.state === 'ESTAB' ? 'badge-estab' : '';
+                const processHtml = c.process !== '-' ? `<span class="badge-process">${c.process}</span>` : '-';
+                
+                return `
+                    <tr>
+                        <td><span class="badge-proto ${protoClass}">${c.proto}</span></td>
+                        <td><span class="badge-state ${stateClass}">${c.state}</span></td>
+                        <td>${c.local}</td>
+                        <td>${c.peer}</td>
+                        <td>${processHtml}</td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        function setConnFilter(proto, btn) {
+            currentFilter = proto;
+            document.querySelectorAll('.conn-filters .filter-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            renderConnectionsTable();
+        }
+
+        function filterConnections() {
+            renderConnectionsTable();
+        }
+
+        // Action Limiter
+        async function applyPreset(dl, ul, btn) {
+            try {
+                const res = await fetch('/api/limit', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ download: dl, upload: ul })
+                });
+                const result = await res.json();
+                
+                if (result.status === 'success') {
+                    // Update active button layout
+                    document.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('active'));
+                    if (btn) btn.classList.add('active');
+                    alert(result.message);
+                    fetchStatus();
+                } else {
+                    alert('Gagal menerapkan limit: ' + result.message);
+                }
+            } catch (err) {
+                alert('Error mengirim permintaan limiter');
+            }
+        }
+
+        async function applyCustom() {
+            const dl = document.getElementById('custom-dl').value.trim();
+            const ul = document.getElementById('custom-ul').value.trim();
+            if (!dl) {
+                alert('Tolong isi batas Download minimum!');
+                return;
+            }
+            await applyPreset(dl, ul || 'disable', null);
+        }
+
+        // Action Daemon Control
+        async function controlDaemon(action) {
+            try {
+                const res = await fetch('/api/daemon', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: action })
+                });
+                const result = await res.json();
+                alert(result.message);
+                fetchStatus();
+            } catch (err) {
+                alert('Error mengontrol daemon');
+            }
+        }
+
+        // Loop execution
+        fetchStatus();
+        fetchConnections();
+        setInterval(fetchStatus, 1000); // 1 detik sekali untuk grafik & status
+        setInterval(fetchConnections, 3000); // 3 detik sekali untuk daftar koneksi
+    </script>
+</body>
+</html>
