@@ -90,31 +90,72 @@ def main():
         print("Tolong pastikan Anda menjalankan skrip ini dari dalam folder repositori hasil clone.")
         sys.exit(1)
 
+    # Menentukan home directory dari user yang menjalankan sudo (menghindari /tmp RAM disk)
+    real_user = os.environ.get("SUDO_USER", "root")
+    user_home = os.path.expanduser(f"~{real_user}")
+
     print("=================================================================")
     print("   QoS CAKE Adaptive - LOCAL INSTALLER SCRIPT FOR STB ROUTER    ")
     print("=================================================================")
-    print(f"Direktori Proyek: {repo_dir}")
+    print(f"Direktori Proyek : {repo_dir}")
+    print(f"Home User Asli   : {user_home}")
     print("=================================================================\n")
 
     # --- LANGKAH 1: Install Dependensi Sistem ---
     print("\n=== LANGKAH 1: Menginstal Dependensi Sistem ===")
     ok, _, _ = run_cmd(["apt-get", "update"])
-    if not ok:
-        print("[-] Gagal memperbarui repositori apt. Melanjutkan...")
     
-    dependencies = [
-        "build-essential", f"linux-headers-{os.uname().release}", "git", "bison", "flex", 
+    # 1. Install base utilities
+    base_deps = [
+        "build-essential", "git", "bison", "flex", 
         "libdb-dev", "libelf-dev", "pkg-config", "libcap-dev", "libmnl-dev", 
         "python3", "python3-pip", "python3-flask"
     ]
-    ok, _, _ = run_cmd(["apt-get", "install", "-y"] + dependencies)
+    print("[*] Menginstal utilitas esensial...")
+    ok, _, _ = run_cmd(["apt-get", "install", "-y"] + base_deps)
     if not ok:
-        print("[-] Beberapa dependensi gagal diinstal secara otomatis. Mencoba kompilasi tetap berjalan...")
+        print("[-] Error: Gagal menginstal utilitas esensial. Periksa koneksi internet STB.")
+        sys.exit(1)
+
+    # 2. Deteksi dan instal linux-headers yang sesuai
+    kernel_release = os.uname().release
+    print(f"[*] Mendeteksi linux-headers untuk kernel {kernel_release}...")
+    headers_package = f"linux-headers-{kernel_release}"
+    
+    # Uji apakah package linux-headers-{release} tersedia di apt
+    ok, _, _ = run_cmd(["apt-cache", "show", headers_package])
+    if not ok:
+        print(f"[!] Paket {headers_package} tidak ditemukan langsung. Mencari alternatif...")
+        if "meson64" in kernel_release:
+            headers_package = "linux-headers-current-meson64"
+        elif "rockchip64" in kernel_release:
+            headers_package = "linux-headers-current-rockchip64"
+        else:
+            ok_search, stdout_search, _ = run_cmd(["apt-cache", "search", "linux-headers"])
+            if ok_search:
+                found = False
+                for line in stdout_search.splitlines():
+                    if kernel_release in line:
+                        parts = line.split()
+                        if parts:
+                            headers_package = parts[0]
+                            found = True
+                            break
+                if not found:
+                    headers_package = "linux-headers-generic"
+
+    print(f"[*] Menginstal paket kernel headers: {headers_package}...")
+    ok, _, _ = run_cmd(["apt-get", "install", "-y", headers_package])
+    if not ok:
+        print(f"[!] Peringatan: Paket {headers_package} gagal diinstal. Memeriksa ketersediaan folder build...")
+        if not os.path.exists(f"/lib/modules/{kernel_release}/build"):
+            print("[-] Gagal: Folder build kernel headers tidak ditemukan. sch_cake.ko tidak bisa dikompilasi!")
+            sys.exit(1)
 
     # --- LANGKAH 2: Kompilasi Kernel Module sch_cake.ko ---
     print("\n=== LANGKAH 2: Kompilasi Modul Jaringan Kernel sch_cake.ko ===")
-    build_dir = "/tmp/mq-cake-build"
-    git_dir = "/tmp/linux-mq-cake"
+    build_dir = os.path.join(user_home, "mq-cake-build")
+    git_dir = os.path.join(user_home, "linux-mq-cake")
     
     if os.path.exists(build_dir):
         shutil.rmtree(build_dir)
@@ -154,9 +195,9 @@ def main():
     # Tulis Makefile build modul
     makefile_content = f"""obj-m += sch_cake.o
 all:
-	make -C /lib/modules/{os.uname().release}/build M=$(PWD) modules
+	make -C /lib/modules/{kernel_release}/build M=$(PWD) modules
 clean:
-	make -C /lib/modules/{os.uname().release}/build M=$(PWD) clean
+	make -C /lib/modules/{kernel_release}/build M=$(PWD) clean
 """
     with open(os.path.join(build_dir, "Makefile"), "w") as f:
         f.write(makefile_content)
@@ -173,7 +214,7 @@ clean:
 
     # Pasang modul kernel ke sistem
     print("[*] Memasang modul kernel sch_cake ke kernel sistem...")
-    dest_ko_dir = f"/lib/modules/{os.uname().release}/kernel/net/sched/"
+    dest_ko_dir = f"/lib/modules/{kernel_release}/kernel/net/sched/"
     os.makedirs(dest_ko_dir, exist_ok=True)
     shutil.copy(ko_path, os.path.join(dest_ko_dir, "sch_cake.ko"))
     
@@ -189,7 +230,7 @@ clean:
 
     # --- LANGKAH 3: Kompilasi iproute2 tc Kustom ---
     print("\n=== LANGKAH 3: Kompilasi Utilitas tc (iproute2) Kustom ===")
-    iproute_git = "/tmp/iproute2-mq"
+    iproute_git = os.path.join(user_home, "iproute2-mq")
     if os.path.exists(iproute_git):
         shutil.rmtree(iproute_git)
 
@@ -263,6 +304,16 @@ clean:
     print("[*] Mengaktifkan & menjalankan service web-monitor...")
     run_cmd(["systemctl", "enable", "web-monitor"])
     run_cmd(["systemctl", "restart", "web-monitor"])
+
+    # Clean up build directories to save disk space
+    print("\n=== LANGKAH 6: Pembersihan File Sementara ===")
+    try:
+        shutil.rmtree(build_dir)
+        shutil.rmtree(git_dir)
+        shutil.rmtree(iproute_git)
+        print("[+] Folder build sementara dibersihkan.")
+    except Exception as e:
+        print(f"[!] Warning: Gagal membersihkan folder build: {e}")
 
     # --- SELESAI ---
     print("\n=================================================================")
