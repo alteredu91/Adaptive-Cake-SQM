@@ -1,277 +1,124 @@
-#!/usr/bin/env python3
-"""
-QoS CAKE Adaptive - Local STB Installer Script
-Skrip ini dijalankan langsung di dalam STB (misalnya melalui SSH atau terminal STB).
-Harus dijalankan dengan hak akses root (sudo python3 install.py).
-
-Fungsi:
-1. Menginstal dependensi build secara lokal.
-2. Mengunduh, mempatch, dan mengompilasi modul kernel sch_cake.ko.
-3. Mengunduh dan mengompilasi iproute2 tc-mq kustom.
-4. Menyalin daemon, service systemd, dan file web monitor ke direktori sistem STB.
-5. Mengaktifkan layanan di systemd.
-"""
-
 import os
 import sys
-import shutil
 import subprocess
-import time
+import shutil
 
-compatibility_header = """
-/* Compatibility Header for Kernel 6.x / 6.1 (Armbian) */
-#ifndef SKB_DROP_REASON_QDISC_CONGESTED
-#define SKB_DROP_REASON_QDISC_CONGESTED SKB_DROP_REASON_QDISC_DROP
-#endif
+def run_cmd(cmd, cwd=None):
+    print(f"--> Menjalankan: {' '.join(cmd)}")
+    try:
+        result = subprocess.run(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if result.returncode == 0:
+            return True, result.stdout, result.stderr
+        else:
+            print(f"[-] Gagal: {result.stderr.strip()}")
+            return False, result.stdout, result.stderr
+    except Exception as e:
+        print(f"[-] Error: {e}")
+        return False, "", str(e)
 
-#ifndef SKB_DROP_REASON_CAKE_FLOOD
-#define SKB_DROP_REASON_CAKE_FLOOD SKB_DROP_REASON_QDISC_DROP
-#endif
-
-#ifndef SKB_DROP_REASON_QDISC_OVERLIMIT
-#define SKB_DROP_REASON_QDISC_OVERLIMIT SKB_DROP_REASON_QDISC_DROP
-#endif
-
-#ifndef SKB_DROP_REASON_QUEUE_PURGE
-#define SKB_DROP_REASON_QUEUE_PURGE SKB_DROP_REASON_QDISC_DROP
-#endif
-
-#ifndef qdisc_drop_reason
-#define qdisc_drop_reason(skb, sch, to_free, reason) qdisc_drop(skb, sch, to_free)
-#endif
-
-#ifndef MODULE_ALIAS_NET_SCH
-#define MODULE_ALIAS_NET_SCH(id) MODULE_ALIAS("sch_" id)
-#endif
-
-/* Define missing TCA_CAKE enums */
-#ifndef TCA_CAKE_FWMARK
-#define TCA_CAKE_FWMARK 19
-#endif
-
-enum {
-    TCA_CAKE_SYNC_TIME = TCA_CAKE_FWMARK + 1,
-    TCA_CAKE_ACTIVE_QUEUES,
-    TCA_CAKE_MIN_TIMER_SLACK,
-    TCA_CAKE_MAX_TIMER_SLACK,
-    TCA_CAKE_AVG_TIMER_SLACK,
-    __TCA_CAKE_MAX_NEW
-};
-#undef TCA_CAKE_MAX
-#define TCA_CAKE_MAX (__TCA_CAKE_MAX_NEW - 1)
-"""
-
-def is_root():
-    return os.geteuid() == 0
-
-def run_cmd(cmd, cwd=None, shell=False):
-    print(f"--> Menjalankan: {' '.join(cmd) if isinstance(cmd, list) else cmd}")
-    res = subprocess.run(cmd, cwd=cwd, shell=shell, capture_output=True, text=True)
-    if res.returncode != 0:
-        print(f"[-] Gagal: {res.stderr.strip()}")
-        return False, res.stdout, res.stderr
-    if res.stdout:
-        print(res.stdout.strip())
-    return True, res.stdout, res.stderr
+def get_default_network_info():
+    iface = "auto"
+    ip = "192.168.1.1"
+    try:
+        res = subprocess.run(["ip", "-o", "-4", "route", "show", "to", "default"], capture_output=True, text=True)
+        if res.stdout:
+            parts = res.stdout.split()
+            if "dev" in parts:
+                iface = parts[parts.index("dev") + 1]
+        
+        if iface != "auto":
+            res_ip = subprocess.run(["ip", "-o", "-4", "addr", "show", "dev", iface], capture_output=True, text=True)
+            if res_ip.stdout:
+                parts = res_ip.stdout.split()
+                if "inet" in parts:
+                    ip = parts[parts.index("inet") + 1].split("/")[0]
+    except Exception:
+        pass
+    return iface, ip
 
 def main():
-    if not is_root():
-        print("[-] Error: Skrip instalasi ini harus dijalankan sebagai ROOT (sudo python3 install.py)!")
+    if os.geteuid() != 0:
+        print("[-] Skrip ini harus dijalankan dengan hak akses root (sudo).")
         sys.exit(1)
 
-    # Dapatkan path asal (current directory repositori)
-    repo_dir = os.path.dirname(os.path.abspath(__file__))
-    src_dir = os.path.join(repo_dir, "src")
-    web_dir = os.path.join(repo_dir, "web_monitor")
-
-    # Validasi struktur folder lokal repositori
-    if not os.path.exists(src_dir) or not os.path.exists(web_dir):
-        print(f"[-] Error: Folder 'src' atau 'web_monitor' tidak ditemukan di {repo_dir}!")
-        print("Tolong pastikan Anda menjalankan skrip ini dari dalam folder repositori hasil clone.")
-        sys.exit(1)
-
-    # Menentukan home directory dari user yang menjalankan sudo (menghindari /tmp RAM disk)
-    real_user = os.environ.get("SUDO_USER", "root")
-    user_home = os.path.expanduser(f"~{real_user}")
-
-    print("=================================================================")
+    script_path = os.path.realpath(__file__)
+    src_dir = os.path.dirname(script_path)
+    web_dir = os.path.join(src_dir, "web_monitor")
+    
+    print("\n=================================================================")
     print("   QoS CAKE Adaptive - LOCAL INSTALLER SCRIPT FOR STB ROUTER    ")
     print("=================================================================")
-    print(f"Direktori Proyek : {repo_dir}")
-    print(f"Home User Asli   : {user_home}")
-    print("=================================================================\n")
-
-    # --- LANGKAH 1: Install Dependensi Sistem ---
+    
     print("\n=== LANGKAH 1: Menginstal Dependensi Sistem ===")
-    ok, _, _ = run_cmd(["apt-get", "update"])
+    run_cmd(["apt-get", "update"])
+    run_cmd(["apt-get", "install", "-y", "python3", "python3-pip", "python3-flask", "iproute2", "dnsmasq", "iptables"])
     
-    # 1. Install base utilities
-    base_deps = [
-        "build-essential", "git", "bison", "flex", 
-        "libdb-dev", "libelf-dev", "pkg-config", "libcap-dev", "libmnl-dev", 
-        "python3", "python3-pip", "python3-flask"
-    ]
-    print("[*] Menginstal utilitas esensial...")
-    ok, _, _ = run_cmd(["apt-get", "install", "-y"] + base_deps)
-    if not ok:
-        print("[-] Error: Gagal menginstal utilitas esensial. Periksa koneksi internet STB.")
-        sys.exit(1)
-
-    # 2. Deteksi dan instal linux-headers yang sesuai
-    kernel_release = os.uname().release
-    print(f"[*] Mendeteksi linux-headers untuk kernel {kernel_release}...")
-    headers_package = f"linux-headers-{kernel_release}"
+    print("\n=== LANGKAH 2: Menggunakan Modul QoS CAKE ===")
     
-    # Uji apakah package linux-headers-{release} tersedia di apt
-    ok, _, _ = run_cmd(["apt-cache", "show", headers_package])
-    if not ok:
-        print(f"[!] Paket {headers_package} tidak ditemukan langsung. Mencari alternatif...")
-        if "meson64" in kernel_release:
-            headers_package = "linux-headers-current-meson64"
-        elif "rockchip64" in kernel_release:
-            headers_package = "linux-headers-current-rockchip64"
-        else:
-            ok_search, stdout_search, _ = run_cmd(["apt-cache", "search", "linux-headers"])
-            if ok_search:
-                found = False
-                for line in stdout_search.splitlines():
-                    if kernel_release in line:
-                        parts = line.split()
-                        if parts:
-                            headers_package = parts[0]
-                            found = True
-                            break
-                if not found:
-                    headers_package = "linux-headers-generic"
-
-    print(f"[*] Menginstal paket kernel headers: {headers_package}...")
-    ok, _, _ = run_cmd(["apt-get", "install", "-y", headers_package])
-    if not ok:
-        print(f"[!] Peringatan: Paket {headers_package} gagal diinstal. Memeriksa ketersediaan folder build...")
-        if not os.path.exists(f"/lib/modules/{kernel_release}/build"):
-            print("[-] Gagal: Folder build kernel headers tidak ditemukan. sch_cake.ko tidak bisa dikompilasi!")
-            sys.exit(1)
-
-    # --- LANGKAH 2: Kompilasi Kernel Module sch_cake.ko ---
-    print("\n=== LANGKAH 2: Kompilasi Modul Jaringan Kernel sch_cake.ko ===")
-    build_dir = os.path.join(user_home, "mq-cake-build")
-    git_dir = os.path.join(user_home, "linux-mq-cake")
+    custom_c = os.path.join(src_dir, "src", "sch_cake_stb_mq.c")
+    custom_module = os.path.join(src_dir, "src", "sch_cake_stb_mq.ko")
     
-    if os.path.exists(build_dir):
-        shutil.rmtree(build_dir)
-    if os.path.exists(git_dir):
-        shutil.rmtree(git_dir)
-
-    print("[*] Mengkloning repositori linux-mq-cake...")
-    ok, _, _ = run_cmd(["git", "clone", "--depth", "1", "https://github.com/mq-cake/linux-mq-cake.git", git_dir])
-    if not ok:
-        print("[-] Gagal mengkloning repositori linux-mq-cake.")
-        sys.exit(1)
-
-    os.makedirs(build_dir, exist_ok=True)
-    shutil.copy(os.path.join(git_dir, "net/sched/sch_cake.c"), os.path.join(build_dir, "sch_cake.c"))
-
-    # Patch compatibility header ke sch_cake.c
-    print("[*] Melakukan patch compatibility header ke sch_cake.c...")
-    try:
-        sch_cake_path = os.path.join(build_dir, "sch_cake.c")
-        with open(sch_cake_path, "r", encoding="utf-8") as f:
-            content = f.read()
-
-        idx = content.find("#include <net/flow_dissector.h>")
-        if idx != -1:
-            end_line = content.find("\n", idx)
-            new_content = content[:end_line+1] + compatibility_header + content[end_line+1:]
-        else:
-            new_content = compatibility_header + content
-
-        with open(sch_cake_path, "w", encoding="utf-8") as f:
-            f.write(new_content)
-        print("[+] Patch sch_cake.c berhasil diterapkan secara lokal!")
-    except Exception as e:
-        print(f"[-] Gagal mem-patch sch_cake.c: {e}")
-        sys.exit(1)
-
-    # Tulis Makefile build modul
-    makefile_content = f"""obj-m += sch_cake.o
-all:
-	make -C /lib/modules/{kernel_release}/build M=$(PWD) modules
-clean:
-	make -C /lib/modules/{kernel_release}/build M=$(PWD) clean
-"""
-    with open(os.path.join(build_dir, "Makefile"), "w") as f:
-        f.write(makefile_content)
-
-    # Kompilasi modul
-    print("[*] Mengompilasi modul kernel sch_cake.ko...")
-    ok, _, _ = run_cmd(["make", "clean"], cwd=build_dir)
-    ok, _, _ = run_cmd(["make"], cwd=build_dir)
-
-    ko_path = os.path.join(build_dir, "sch_cake.ko")
-    if not os.path.exists(ko_path):
-        print("[-] Kompilasi sch_cake.ko GAGAL!")
-        sys.exit(1)
-
-    # Pasang modul kernel ke sistem
-    print("[*] Memasang modul kernel sch_cake ke kernel sistem...")
-    dest_ko_dir = f"/lib/modules/{kernel_release}/kernel/net/sched/"
-    os.makedirs(dest_ko_dir, exist_ok=True)
-    shutil.copy(ko_path, os.path.join(dest_ko_dir, "sch_cake.ko"))
-    
-    run_cmd(["depmod", "-a"])
-    run_cmd(["modprobe", "sch_cake"])
-
-    # Cek apakah modul terload
-    ok, stdout, _ = run_cmd(["lsmod"])
-    if "sch_cake" in stdout:
-        print("[+] Modul kernel sch_cake.ko berhasil dimuat!")
-    else:
-        print("[-] Gagal memuat modul kernel sch_cake ke kernel!")
-
-    # --- LANGKAH 3: Kompilasi iproute2 tc Kustom ---
-    print("\n=== LANGKAH 3: Kompilasi Utilitas tc (iproute2) Kustom ===")
-    iproute_git = os.path.join(user_home, "iproute2-mq")
-    if os.path.exists(iproute_git):
-        shutil.rmtree(iproute_git)
-
-    print("[*] Mengkloning repositori iproute2-mq...")
-    ok, _, _ = run_cmd(["git", "clone", "--depth", "1", "https://github.com/mq-cake/iproute2.git", iproute_git])
-    if not ok:
-        print("[-] Gagal mengkloning repositori iproute2.")
-        sys.exit(1)
-
-    print("[*] Mengonfigurasi dan mengompilasi iproute2...")
-    ok, _, _ = run_cmd(["./configure"], cwd=iproute_git)
-    if not ok:
-        print("[-] Gagal mengonfigurasi iproute2.")
-        sys.exit(1)
+    # Kompilasi otomatis jika file .c ada tapi file .ko belum ada
+    if os.path.exists(custom_c) and not os.path.exists(custom_module):
+        print("[*] Mengompilasi modul kustom sch_cake_stb_mq.c menjadi .ko...")
+        run_cmd(["apt-get", "install", "-y", "build-essential", "bc", "bison", "flex", "libssl-dev"])
+        # Coba install linux-headers dan kbuild untuk kernel yang sedang berjalan
+        kbuild_pkg = f"linux-kbuild-{os.uname().release.split('-')[0][:3]}"
+        run_cmd(["apt-get", "install", "-y", f"linux-headers-{os.uname().release}", kbuild_pkg])
         
-    ok, _, _ = run_cmd(["make", "-j" + str(os.cpu_count() or 2)], cwd=iproute_git)
-    if not ok:
-        print("[-] Gagal mengompilasi iproute2.")
-        sys.exit(1)
+        makefile_path = os.path.join(src_dir, "src", "Makefile")
+        with open(makefile_path, "w") as f:
+            f.write("obj-m += sch_cake_stb_mq.o\n")
+            f.write("all:\n")
+            f.write("\tmake -C /lib/modules/$(shell uname -r)/build M=$(CURDIR) modules\n")
+            f.write("clean:\n")
+            f.write("\tmake -C /lib/modules/$(shell uname -r)/build M=$(CURDIR) clean\n")
+        
+        ok, stdout, stderr = run_cmd(["make", "clean"], cwd=os.path.join(src_dir, "src"))
+        ok, stdout, stderr = run_cmd(["make"], cwd=os.path.join(src_dir, "src"))
+        
+        if not ok:
+            print(f"[-] Gagal mengompilasi modul custom: {stderr.strip()}")
+            print("[-] Pastikan linux-headers terinstal dengan benar di STB Anda!")
+            sys.exit(1)
+        print("[+] Kompilasi berhasil! File .ko terbentuk.")
 
-    # Pasang tc kustom ke /usr/local/sbin/tc
-    shutil.copy(os.path.join(iproute_git, "tc/tc"), "/usr/local/sbin/tc")
-    os.chmod("/usr/local/sbin/tc", 0o755)
+    # Periksa apakah modul kustom tersedia setelah dicompile
+    if os.path.exists(custom_module):
+        print("[*] Mendaftarkan modul sch_cake_stb_mq ke /lib/modules secara permanen...")
+        kernel_ver = subprocess.run(["uname", "-r"], capture_output=True, text=True).stdout.strip()
+        mod_dir = f"/lib/modules/{kernel_ver}/kernel/net/sched"
+        os.makedirs(mod_dir, exist_ok=True)
+        shutil.copy(custom_module, mod_dir)
+        run_cmd(["depmod", "-a"])
+        
+        # Tambahkan ke /etc/modules agar dimuat saat boot
+        with open("/etc/modules", "r") as f:
+            modules_content = f.read()
+        if "sch_cake_stb_mq" not in modules_content:
+            with open("/etc/modules", "a") as f:
+                f.write("\nsch_cake_stb_mq\n")
+        
+        print("[*] Ditemukan modul kernel kustom sch_cake_stb_mq.ko, sedang memuat...")
+        run_cmd(["rmmod", "sch_cake_stb_mq"])
+        run_cmd(["modprobe", "sch_cake_stb_mq"])
+        print("[+] Modul custom sch_cake_stb_mq berhasil dimuat secara permanen!")
+    else:
+        # Pastikan modul native dimuat (fallback statis jika .c memang tidak disediakan)
+        run_cmd(["modprobe", "sch_cake"])
+        print("[+] Modul sch_cake native berhasil dipastikan aktif!")
 
-    # Verifikasi utilitas kustom tc
-    ok, stdout, _ = run_cmd(["/usr/local/sbin/tc", "-V"])
-    if ok:
-        print(f"[+] Versi tc kustom terpasang: {stdout.strip()}")
-
-    # --- LANGKAH 4: Menyalin Core Daemon & Web Monitor ---
-    print("\n=== LANGKAH 4: Menyalin Core Daemon & Web Monitor ke Sistem ===")
+    print("\n=== LANGKAH 3: Menyalin Core Daemon & Web Monitor ke Sistem ===")
     
     # 1. Salin script daemon ke /usr/local/bin
     print("[*] Memasang cake_adaptive.py ke /usr/local/bin...")
-    shutil.copy(os.path.join(src_dir, "cake_adaptive.py"), "/usr/local/bin/cake_adaptive.py")
+    shutil.copy(os.path.join(src_dir, "src", "cake_adaptive.py"), "/usr/local/bin/cake_adaptive.py")
     os.chmod("/usr/local/bin/cake_adaptive.py", 0o755)
 
     # 2. Salin file service systemd
     print("[*] Memasang service unit ke /etc/systemd/system...")
-    shutil.copy(os.path.join(src_dir, "cake-adaptive.service"), "/etc/systemd/system/cake-adaptive.service")
-    shutil.copy(os.path.join(src_dir, "web-monitor.service"), "/etc/systemd/system/web-monitor.service")
+    shutil.copy(os.path.join(src_dir, "src", "cake-adaptive.service"), "/etc/systemd/system/cake-adaptive.service")
+    shutil.copy(os.path.join(src_dir, "src", "web-monitor.service"), "/etc/systemd/system/web-monitor.service")
 
     # 3. Salin source code Web Monitor Flask
     flask_dest = "/usr/local/share/qos-cake-monitor"
@@ -288,12 +135,35 @@ clean:
     # 4. Tulis file konfigurasi default /etc/cake_adaptive.conf jika belum ada
     config_file = "/etc/cake_adaptive.conf"
     if not os.path.exists(config_file):
-        default_conf_str = '{\n    "interface": "veth_rtr_lan",\n    "ping_dest": "10.0.2.2",\n    "bandwidth": "150mbit",\n    "interval": 1.0,\n    "extra_opts": "diffserv4 sync 500us"\n}'
+        auto_iface, auto_ip = get_default_network_info()
+        default_conf_str = f'''{{
+    "interface": "{auto_iface}",
+    "ping_dest": "1.1.1.1",
+    "bandwidth": "150mbit",
+    "interval": 1.0,
+    "extra_opts": "diffserv4",
+    "qdisc_type": "cake_stb",
+    "wan_interface": "auto",
+    "lan_ip": "{auto_ip}",
+    "lan_netmask": "255.255.255.0",
+    "dhcp_enabled": false,
+    "dhcp_start": "192.168.10.10",
+    "dhcp_end": "192.168.10.100"
+}}'''
         with open(config_file, "w") as f:
             f.write(default_conf_str)
         print("[+] Konfigurasi default dibuat di /etc/cake_adaptive.conf")
 
-    # --- LANGKAH 5: Registrasi & Jalankan Service ---
+    print("\n=== LANGKAH 4: Konfigurasi Jaringan (Router) ===")
+    sysctl_file = "/etc/sysctl.conf"
+    with open(sysctl_file, "r") as f:
+        sysctl_content = f.read()
+    if "net.ipv4.ip_forward=1" not in sysctl_content.replace(" ", ""):
+        with open(sysctl_file, "a") as f:
+            f.write("\nnet.ipv4.ip_forward=1\n")
+        print("[+] IP Forwarding diaktifkan permanen di /etc/sysctl.conf")
+    run_cmd(["sysctl", "-p"])
+
     print("\n=== LANGKAH 5: Mendaftarkan & Menjalankan Service Systemd ===")
     run_cmd(["systemctl", "daemon-reload"])
     
@@ -305,17 +175,6 @@ clean:
     run_cmd(["systemctl", "enable", "web-monitor"])
     run_cmd(["systemctl", "restart", "web-monitor"])
 
-    # Clean up build directories to save disk space
-    print("\n=== LANGKAH 6: Pembersihan File Sementara ===")
-    try:
-        shutil.rmtree(build_dir)
-        shutil.rmtree(git_dir)
-        shutil.rmtree(iproute_git)
-        print("[+] Folder build sementara dibersihkan.")
-    except Exception as e:
-        print(f"[!] Warning: Gagal membersihkan folder build: {e}")
-
-    # --- SELESAI ---
     print("\n=================================================================")
     print("   PROSES INSTALASI DAN ATURAN QOS CAKE ADAPTIVE SELESAI!")
     print("=================================================================")

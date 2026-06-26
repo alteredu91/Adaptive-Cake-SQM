@@ -720,6 +720,44 @@
             </div>
         </div>
 
+        <!-- Network Settings -->
+        <div class="glass-card conn-card" style="height: auto; grid-column: span 12;">
+            <div class="conn-header" style="margin-bottom: 1rem;">
+                <div class="chart-title">
+                    <i class="fa-solid fa-server" style="color: var(--success);"></i>
+                    Router Network Settings (LAN & DHCP)
+                </div>
+            </div>
+            
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1rem;">
+                <!-- LAN IP -->
+                <div style="background: rgba(0,0,0,0.2); padding: 1rem; border-radius: 0.5rem; border: 1px solid var(--card-border);">
+                    <div style="color: var(--text-secondary); font-size: 0.85rem; margin-bottom: 0.5rem;"><i class="fa-solid fa-network-wired"></i> LAN IP Address</div>
+                    <input type="text" id="net-lan-ip" class="search-box" style="width: 100%; margin-bottom: 0.5rem;" placeholder="192.168.10.1">
+                    <div style="color: var(--text-secondary); font-size: 0.85rem; margin-bottom: 0.5rem;">Subnet Mask</div>
+                    <input type="text" id="net-lan-mask" class="search-box" style="width: 100%;" placeholder="255.255.255.0">
+                </div>
+
+                <!-- DHCP Server -->
+                <div style="background: rgba(0,0,0,0.2); padding: 1rem; border-radius: 0.5rem; border: 1px solid var(--card-border);">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+                        <div style="color: var(--text-secondary); font-size: 0.85rem;"><i class="fa-solid fa-laptop-house"></i> DHCP Server</div>
+                        <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; font-size: 0.85rem;">
+                            <input type="checkbox" id="net-dhcp-enable"> Enable
+                        </label>
+                    </div>
+                    <div style="color: var(--text-secondary); font-size: 0.85rem; margin-bottom: 0.5rem;">Start IP</div>
+                    <input type="text" id="net-dhcp-start" class="search-box" style="width: 100%; margin-bottom: 0.5rem;" placeholder="192.168.10.10">
+                    <div style="color: var(--text-secondary); font-size: 0.85rem; margin-bottom: 0.5rem;">End IP</div>
+                    <input type="text" id="net-dhcp-end" class="search-box" style="width: 100%;" placeholder="192.168.10.100">
+                </div>
+            </div>
+
+            <div style="margin-top: 1rem; text-align: right;">
+                <button class="btn-apply" onclick="saveNetwork()" style="padding: 0.6rem 1.5rem;"><i class="fa-solid fa-save"></i> Apply Network Settings</button>
+            </div>
+        </div>
+
         <!-- Terminal Logs -->
         <div class="glass-card logs-card">
             <div class="logs-header">
@@ -814,6 +852,12 @@
         // Fetch Status & Speed
         async function fetchStatus() {
             try {
+                // Fetch Network Settings First if not loaded
+                if (!window.networkLoaded) {
+                    fetchNetwork();
+                    window.networkLoaded = true;
+                }
+                
                 const res = await fetch('/api/status');
                 const data = await res.json();
                 
@@ -831,19 +875,30 @@
                 // Update Speeds (Note: we read from LAN interface rate to show what the clients see)
                 // LAN rx_mbps = clients' upload speed, LAN tx_mbps = clients' download speed
                 const dlRate = data.interfaces.lan.tx_mbps;
-                const ulRate = data.interfaces.lan.rx_mbps;
-
+                const ulRate = data.interfaces.wan.tx_mbps;
+                
+                // Update UI elements
                 document.getElementById('speed-dl').innerHTML = `${dlRate.toFixed(2)} <span class="speed-unit">Mbps</span>`;
                 document.getElementById('speed-ul').innerHTML = `${ulRate.toFixed(2)} <span class="speed-unit">Mbps</span>`;
                 
                 // Update Details
-                document.getElementById('lan-details').innerHTML = `<i class="fa-solid fa-network-wired"></i> LAN: ${data.interfaces.lan.name}`;
-                document.getElementById('wan-details').innerHTML = `<i class="fa-solid fa-globe"></i> WAN: ${data.interfaces.wan.name}`;
+                document.getElementById('lan-details').innerHTML = `<i class="fa-solid fa-network-wired"></i> Interface LAN: ${data.interfaces.lan.name}`;
+                document.getElementById('wan-details').innerHTML = `<i class="fa-solid fa-globe"></i> Interface WAN: ${data.interfaces.wan.name}`;
                 
                 // Update Parameters
                 document.getElementById('cake-rtt').innerText = data.interfaces.lan.cake_rtt;
                 document.getElementById('wan-limit').innerText = data.interfaces.wan.limit;
                 
+                // Update Inputs Placeholder (only if they are not currently focused)
+                const cfgLan = document.getElementById('cfg-lan');
+                if (cfgLan && document.activeElement !== cfgLan) {
+                    cfgLan.value = data.config.interface || '';
+                }
+                const cfgWan = document.getElementById('cfg-wan');
+                if (cfgWan && document.activeElement !== cfgWan) {
+                    cfgWan.value = data.config.wan_interface && data.config.wan_interface !== 'auto' ? data.config.wan_interface : '';
+                }
+
                 // Chart
                 updateChart(dlRate, ulRate);
 
@@ -958,19 +1013,75 @@
         }
 
         // Action Daemon Control
-        async function controlDaemon(action) {
-            try {
-                const res = await fetch('/api/daemon', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ action: action })
-                });
-                const result = await res.json();
-                alert(result.message);
+        function controlDaemon(action) {
+            fetch('/api/daemon', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: action })
+            }).then(res => res.json()).then(data => {
+                alert(data.message);
                 fetchStatus();
-            } catch (err) {
-                alert('Error mengontrol daemon');
+            });
+        }
+        
+        function saveInterfaces() {
+            const lanIf = document.getElementById('cfg-lan').value.trim();
+            const wanIf = document.getElementById('cfg-wan').value.trim();
+            
+            if (!lanIf) {
+                alert('Interface LAN tidak boleh kosong!');
+                return;
             }
+            
+            fetch('/api/config/interfaces', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ 
+                    lan_interface: lanIf,
+                    wan_interface: wanIf || 'auto'
+                })
+            }).then(res => res.json()).then(data => {
+                alert(data.message);
+                fetchStatus();
+            }).catch(err => {
+                alert('Gagal menyimpan pengaturan: ' + err);
+            });
+        }
+        
+        // Network / Router Settings
+        async function fetchNetwork() {
+            try {
+                const res = await fetch('/api/network');
+                const data = await res.json();
+                
+                document.getElementById('net-lan-ip').value = data.lan_ip;
+                document.getElementById('net-lan-mask').value = data.lan_netmask;
+                document.getElementById('net-dhcp-enable').checked = data.dhcp_enabled;
+                document.getElementById('net-dhcp-start').value = data.dhcp_start;
+                document.getElementById('net-dhcp-end').value = data.dhcp_end;
+            } catch (err) {
+                console.error("Gagal mengambil data network:", err);
+            }
+        }
+        
+        function saveNetwork() {
+            const data = {
+                lan_ip: document.getElementById('net-lan-ip').value.trim(),
+                lan_netmask: document.getElementById('net-lan-mask').value.trim(),
+                dhcp_enabled: document.getElementById('net-dhcp-enable').checked,
+                dhcp_start: document.getElementById('net-dhcp-start').value.trim(),
+                dhcp_end: document.getElementById('net-dhcp-end').value.trim()
+            };
+            
+            fetch('/api/network', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            }).then(res => res.json()).then(result => {
+                alert(result.message);
+            }).catch(err => {
+                alert('Gagal menyimpan pengaturan network: ' + err);
+            });
         }
 
         // Loop execution

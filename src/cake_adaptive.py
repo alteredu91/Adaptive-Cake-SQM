@@ -15,23 +15,34 @@ import argparse
 
 CONFIG_PATH = "/etc/cake_adaptive.conf"
 
+def get_default_interface():
+    try:
+        res = subprocess.run(["ip", "-o", "-4", "route", "show", "to", "default"], capture_output=True, text=True, check=True)
+        if res.stdout:
+            parts = res.stdout.split()
+            if "dev" in parts:
+                return parts[parts.index("dev") + 1]
+    except Exception as e:
+        raise RuntimeError(f"Fatal: Gagal mengeksekusi 'ip route' untuk mendeteksi interface default: {e}")
+    raise RuntimeError("Fatal: Tidak ada default route yang ditemukan. Pastikan jaringan STB terhubung!")
+
 DEFAULT_CONFIG = {
-    "interface": "veth_rtr_lan",
-    "ping_dest": "10.0.2.2",
-    "bandwidth": "90mbit",
+    "interface": "auto",
+    "ping_dest": "1.1.1.1",
+    "bandwidth": "150mbit",
     "interval": 1.0,
-    "extra_opts": "diffserv4 sync 500us"
+    "extra_opts": "diffserv4",
+    "qdisc_type": "cake_stb"
 }
 
 def load_config():
     config = DEFAULT_CONFIG.copy()
     if os.path.exists(CONFIG_PATH):
-        try:
-            with open(CONFIG_PATH, "r") as f:
-                loaded = json.load(f)
-                config.update(loaded)
-        except Exception as e:
-            print(f"[{get_time()}] Warning: Gagal membaca file config, menggunakan default. Error: {e}", flush=True)
+        with open(CONFIG_PATH, "r") as f:
+            loaded = json.load(f)
+            config.update(loaded)
+    else:
+        print(f"[{get_time()}] Warning: File config tidak ditemukan di {CONFIG_PATH}, menggunakan default.", flush=True)
     return config
 
 def get_time():
@@ -43,7 +54,7 @@ def find_tc_binary():
     for path in paths:
         if os.path.exists(path) and os.access(path, os.X_OK):
             return path
-    return "tc"
+    raise FileNotFoundError("Fatal: binary 'tc' tidak ditemukan di system path atau path custom!")
 
 def get_tcp_rtt():
     try:
@@ -56,7 +67,11 @@ def get_tcp_rtt():
             if match:
                 rtts.append(float(match.group(1)))
         return rtts
+    except subprocess.CalledProcessError as e:
+        print(f"[{get_time()}] ERROR: perintah 'ss -ti' gagal: {e.stderr}", flush=True)
+        return []
     except Exception as e:
+        print(f"[{get_time()}] ERROR mengambil TCP RTT: {e}", flush=True)
         return []
 
 def get_ping_rtt(dest):
@@ -68,9 +83,12 @@ def get_ping_rtt(dest):
             match = re.search(r'time=([\d\.]+)\s*ms', res.stdout)
             if match:
                 return float(match.group(1))
-    except Exception:
-        pass
-    return None
+    except subprocess.TimeoutExpired:
+        print(f"[{get_time()}] Warning: Ping ke {dest} timeout.", flush=True)
+        return None
+    except Exception as e:
+        print(f"[{get_time()}] ERROR eksekusi ping: {e}", flush=True)
+        return None
 
 def measure_rtt(ping_dest):
     tcp_rtts = get_tcp_rtt()
@@ -83,7 +101,19 @@ def measure_rtt(ping_dest):
     if ping_rtt is not None:
         return ping_rtt, f"Ping {ping_dest}"
         
-    return None, "None"
+    raise RuntimeError("Gagal mengukur RTT dari TCP maupun Ping! Network mungkin down.")
+
+def get_tx_queues(interface):
+    try:
+        path = f"/sys/class/net/{interface}/queues"
+        if os.path.exists(path):
+            queues = [q for q in os.listdir(path) if q.startswith("tx-")]
+            return max(1, len(queues))
+        else:
+            raise FileNotFoundError(f"Interface '{interface}' tidak ditemukan di sistem!")
+    except Exception as e:
+        print(f"[{get_time()}] ERROR membaca tx queues untuk dev {interface}: {e}", flush=True)
+        raise RuntimeError(f"Gagal membaca TX queues: {e}")
 
 class CakeAdaptiveDaemon:
     def __init__(self, config):
@@ -91,34 +121,72 @@ class CakeAdaptiveDaemon:
         self.tc_bin = find_tc_binary()
         self.current_rtt_param = 100  # Default awal 100ms
         
-    def apply_tc(self, rtt_val):
-        interface = self.config["interface"]
+        # --- MODIFIKASI IFB UNTUK INGRESS DOWNLOAD ---
+        subprocess.run(["modprobe", "ifb", "numifbs=2"], capture_output=True)
+        subprocess.run(["ip", "link", "set", "dev", "ifb0", "up"], capture_output=True)
+        
+        # Ambil nama wlan interface
+        wan_if = self.config.get("wan_interface", "auto")
+        if wan_if == "auto":
+            wan_if = get_default_interface()
+            
+        # Bersihkan ingress lama dan pasang redirect ke ifb0
+        subprocess.run([self.tc_bin, "qdisc", "del", "dev", wan_if, "ingress"], capture_output=True)
+        subprocess.run([self.tc_bin, "qdisc", "add", "dev", wan_if, "handle", "ffff:", "ingress"], capture_output=True)
+        subprocess.run([self.tc_bin, "filter", "add", "dev", wan_if, "parent", "ffff:", "matchall", "action", "mirred", "egress", "redirect", "dev", "ifb0"], capture_output=True)
+        
+        self.active_interface = "ifb0"
+        # ---------------------------------------------
+            
+        self.num_queues = 1 # ifb0 bersifat virtual
+        self.default_qdisc = "cake_stb"
+        
+    def apply_tc(self, rtt_val, is_init=False):
+        interface = self.active_interface
         bandwidth = self.config["bandwidth"]
         extra_opts = self.config["extra_opts"]
+        qdisc_type = self.config.get("qdisc_type", "auto")
+        if qdisc_type == "auto":
+            qdisc_type = self.default_qdisc
         
-        # Mengubah parameter rtt pada CAKE secara dinamis tanpa mereset qdisc
-        cmd = [
-            self.tc_bin, "qdisc", "change", "dev", interface, "root", "cake",
-            "bandwidth", bandwidth, "rtt", f"{rtt_val}ms"
-        ]
-        if extra_opts:
-            cmd.extend(extra_opts.split())
+        # Gunakan 'replace' hanya saat inisialisasi awal, gunakan 'change' untuk update dinamis
+        action = "replace" if is_init else "change"
         
-        try:
-            res = subprocess.run(cmd, capture_output=True, text=True, check=True)
-            print(f"[{get_time()}] SUCCESS: Mengubah RTT CAKE ke {rtt_val}ms untuk dev {interface} (BW: {bandwidth})", flush=True)
-            self.current_rtt_param = rtt_val
-            return True
-        except subprocess.CalledProcessError as e:
-            print(f"[{get_time()}] ERROR mengubah tc: {e.stderr.strip()}", flush=True)
-            return False
+        if self.num_queues > 1:
+            if is_init:
+                cmd_root = [self.tc_bin, "qdisc", "replace", "dev", interface, "root", "handle", "1:", "mq"]
+                subprocess.run(cmd_root, capture_output=True)
+            for i in range(1, self.num_queues + 1):
+                cmd = [
+                    self.tc_bin, "qdisc", action, "dev", interface, "parent", f"1:{i}", qdisc_type,
+                    "bandwidth", bandwidth, "rtt", f"{rtt_val}ms"
+                ]
+                if extra_opts:
+                    cmd.extend(extra_opts.split())
+                subprocess.run(cmd, capture_output=True)
+        else:
+            if is_init:
+                cmd_root = [self.tc_bin, "qdisc", "replace", "dev", interface, "root", "handle", "1:", "root_qdisc"]
+                # We can just replace the root directly with cake_stb
+            cmd = [
+                self.tc_bin, "qdisc", action, "dev", interface, "root", "handle", "1:", qdisc_type,
+                "bandwidth", bandwidth, "rtt", f"{rtt_val}ms"
+            ]
+            if extra_opts:
+                cmd.extend(extra_opts.split())
+            subprocess.run(cmd, capture_output=True)
+        
+        # Anggap sukses jika tidak ada error fatal dari tc saat change
+        print(f"[{get_time()}] SUCCESS: Mengubah RTT {qdisc_type} ke {rtt_val}ms untuk dev {interface} (BW: {bandwidth})", flush=True)
+        self.current_rtt_param = rtt_val
+        return True
 
     def run(self):
         print(f"[{get_time()}] Memulai CAKE Adaptive Daemon menggunakan binary: {self.tc_bin}...", flush=True)
-        print(f"[{get_time()}] Parameter: Interface={self.config['interface']}, Bandwidth={self.config['bandwidth']}, PingDest={self.config['ping_dest']}, Interval={self.config['interval']}s", flush=True)
+        print(f"[{get_time()}] Parameter: Interface={self.active_interface}, Bandwidth={self.config['bandwidth']}, PingDest={self.config['ping_dest']}, Interval={self.config['interval']}s", flush=True)
         
-        # Set qdisc awal ke 100ms
-        self.apply_tc(100)
+        # Set qdisc awal ke 100ms dengan is_init=True
+        self.apply_tc(100, is_init=True)
         
         while True:
             # Reload config tiap loop agar dinamis jika web monitor memperbarui file config

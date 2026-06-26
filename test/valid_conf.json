@@ -1,0 +1,8 @@
+{
+    "interface": "eth0",
+    "ping_dest": "1.1.1.1",
+    "bandwidth": "150mbit",
+    "interval": 1.0,
+    "extra_opts": "diffserv4",
+    "qdisc_type": "cake"
+}
